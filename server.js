@@ -1,10 +1,17 @@
+require('dotenv').config();
+
 const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http);
 const path = require('path');
+const fs = require('fs');
+const db = require('./db'); // MongoDB integration
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
+const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+
+let dbConnected = false; // Track MongoDB connection status
 
 // Game state
 let players = new Map(); // socket.id -> player data
@@ -13,6 +20,52 @@ let activeGames = new Map(); // gameId -> game data
 let leaderboard = new Map(); // username -> stats
 let tournamentMode = false;
 let tournamentBracket = [];
+
+// Load leaderboard from file on startup
+function loadLeaderboard() {
+    try {
+        if (fs.existsSync(LEADERBOARD_FILE)) {
+            const data = fs.readFileSync(LEADERBOARD_FILE, 'utf8');
+            const leaderboardData = JSON.parse(data);
+            leaderboard.clear();
+            
+            leaderboardData.forEach(entry => {
+                leaderboard.set(entry.username, entry);
+            });
+            
+            console.log(`[LOAD] Leaderboard loaded with ${leaderboardData.length} entries`);
+        }
+    } catch (error) {
+        console.error('[ERROR] Failed to load leaderboard:', error);
+    }
+}
+
+// Save leaderboard to file
+function saveLeaderboard() {
+    try {
+        const leaderboardArray = Array.from(leaderboard.values());
+        fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboardArray, null, 2), 'utf8');
+        console.log(`[SAVE] Leaderboard saved with ${leaderboardArray.length} entries`);
+    } catch (error) {
+        console.error('[ERROR] Failed to save leaderboard:', error);
+    }
+}
+
+// Initialize database and load data
+async function initDatabase() {
+    console.log('[INIT] Connecting to MongoDB...');
+    dbConnected = await db.connectDB();
+    
+    if (!dbConnected) {
+        console.log('[INIT] Using local JSON storage fallback');
+        loadLeaderboard();
+    } else {
+        console.log('[INIT] MongoDB connected - using database storage');
+    }
+}
+
+// Initialize on startup
+initDatabase();
 
 app.use(express.static('public'));
 
@@ -24,7 +77,7 @@ io.on('connection', (socket) => {
     console.log(`[CONNECTION] User connected: ${socket.id}`);
 
     // Player joins
-    socket.on('join', (username) => {
+    socket.on('join', async (username) => {
         if (!username || username.trim() === '') {
             socket.emit('error', 'Invalid username');
             return;
@@ -43,15 +96,25 @@ io.on('connection', (socket) => {
             inGame: false
         });
 
-        // Initialize leaderboard entry
-        if (!leaderboard.has(username)) {
-            leaderboard.set(username, {
-                username: username,
-                wins: 0,
-                losses: 0,
-                draws: 0,
-                points: 0
-            });
+        // Initialize player in database or get existing
+        if (dbConnected) {
+            const existingPlayer = await db.getPlayer(username);
+            if (!existingPlayer) {
+                await db.createPlayer(username);
+                console.log(`[DB] New player created: ${username}`);
+            }
+        } else {
+            // Fallback to JSON storage
+            if (!leaderboard.has(username)) {
+                leaderboard.set(username, {
+                    username: username,
+                    wins: 0,
+                    losses: 0,
+                    draws: 0,
+                    points: 0
+                });
+                saveLeaderboard();
+            }
         }
 
         socket.emit('joined', { username: username });
@@ -89,7 +152,7 @@ io.on('connection', (socket) => {
     });
 
     // Make move
-    socket.on('makeMove', (data) => {
+    socket.on('makeMove', async (data) => {
         const { gameId, position } = data;
         const game = activeGames.get(gameId);
         
@@ -107,9 +170,9 @@ io.on('connection', (socket) => {
         const winner = checkWinner(game.board);
         
         if (winner) {
-            endGame(gameId, winner === 'X' ? game.player1 : game.player2, 'win');
+            await endGame(gameId, winner === 'X' ? game.player1 : game.player2, 'win');
         } else if (game.moveCount === 9) {
-            endGame(gameId, null, 'draw');
+            await endGame(gameId, null, 'draw');
         } else {
             // Switch turn
             game.currentTurn = game.currentTurn === game.player1 ? game.player2 : game.player1;
@@ -253,7 +316,7 @@ function checkWinner(board) {
     return null;
 }
 
-function endGame(gameId, winnerId, result) {
+async function endGame(gameId, winnerId, result) {
     const game = activeGames.get(gameId);
     if (!game) return;
 
@@ -274,12 +337,44 @@ function endGame(gameId, winnerId, result) {
             const winnerStats = leaderboard.get(winner.username);
             const loserStats = leaderboard.get(loser.username);
             
-            winnerStats.wins++;
-            winnerStats.points += 3;
-            loserStats.losses++;
-            
-            leaderboard.set(winner.username, winnerStats);
-            leaderboard.set(loser.username, loserStats);
+            if (dbConnected) {
+                // Save game to database
+                await db.saveGame({
+                    gameId: gameId,
+                    player1: { id: game.player1, username: player1.username, symbol: 'X' },
+                    player2: { id: game.player2, username: player2.username, symbol: 'O' },
+                    board: game.board,
+                    result: 'win',
+                    winner: winner.username,
+                    loser: loser.username,
+                    moves: game.moveCount
+                });
+                
+                // Update player stats in database
+                const updatedWinner = await db.Player.findOne({ username: winner.username });
+                if (updatedWinner) {
+                    updatedWinner.stats.wins++;
+                    updatedWinner.stats.points += 3;
+                    updatedWinner.lastLogin = new Date();
+                    await updatedWinner.save();
+                }
+                
+                const updatedLoser = await db.Player.findOne({ username: loser.username });
+                if (updatedLoser) {
+                    updatedLoser.stats.losses++;
+                    updatedLoser.lastLogin = new Date();
+                    await updatedLoser.save();
+                }
+            } else {
+                // Fallback to JSON storage
+                winnerStats.wins++;
+                winnerStats.points += 3;
+                loserStats.losses++;
+                
+                leaderboard.set(winner.username, winnerStats);
+                leaderboard.set(loser.username, loserStats);
+                saveLeaderboard();
+            }
         }
 
         io.to(winnerId).emit('gameEnd', { result: 'win', gameId: gameId });
@@ -290,13 +385,46 @@ function endGame(gameId, winnerId, result) {
             const stats1 = leaderboard.get(player1.username);
             const stats2 = leaderboard.get(player2.username);
             
-            stats1.draws++;
-            stats1.points += 1;
-            stats2.draws++;
-            stats2.points += 1;
-            
-            leaderboard.set(player1.username, stats1);
-            leaderboard.set(player2.username, stats2);
+            if (dbConnected) {
+                // Save game to database
+                await db.saveGame({
+                    gameId: gameId,
+                    player1: { id: game.player1, username: player1.username, symbol: 'X' },
+                    player2: { id: game.player2, username: player2.username, symbol: 'O' },
+                    board: game.board,
+                    result: 'draw',
+                    winner: null,
+                    loser: null,
+                    moves: game.moveCount
+                });
+                
+                // Update player stats in database
+                const p1 = await db.Player.findOne({ username: player1.username });
+                if (p1) {
+                    p1.stats.draws++;
+                    p1.stats.points += 1;
+                    p1.lastLogin = new Date();
+                    await p1.save();
+                }
+                
+                const p2 = await db.Player.findOne({ username: player2.username });
+                if (p2) {
+                    p2.stats.draws++;
+                    p2.stats.points += 1;
+                    p2.lastLogin = new Date();
+                    await p2.save();
+                }
+            } else {
+                // Fallback to JSON storage
+                stats1.draws++;
+                stats1.points += 1;
+                stats2.draws++;
+                stats2.points += 1;
+                
+                leaderboard.set(player1.username, stats1);
+                leaderboard.set(player2.username, stats2);
+                saveLeaderboard();
+            }
         }
 
         io.to(game.player1).emit('gameEnd', { result: 'draw', gameId: gameId });
@@ -336,15 +464,30 @@ function startTournament(availablePlayers) {
     console.log('[TOURNAMENT] Started with', shuffled.length, 'players');
 }
 
-function broadcastLobbyUpdate() {
+async function broadcastLobbyUpdate() {
     const onlinePlayers = Array.from(players.values()).map(p => ({
         username: p.username,
         inGame: p.inGame
     }));
 
-    const sortedLeaderboard = Array.from(leaderboard.values())
-        .sort((a, b) => b.points - a.points)
-        .slice(0, 10);
+    let sortedLeaderboard = [];
+    
+    if (dbConnected) {
+        // Fetch from MongoDB
+        const dbLeaderboard = await db.getLeaderboard(10);
+        sortedLeaderboard = dbLeaderboard.map(p => ({
+            username: p.username,
+            wins: p.stats.wins,
+            losses: p.stats.losses,
+            draws: p.stats.draws,
+            points: p.stats.points
+        }));
+    } else {
+        // Fallback to JSON storage
+        sortedLeaderboard = Array.from(leaderboard.values())
+            .sort((a, b) => b.points - a.points)
+            .slice(0, 10);
+    }
 
     io.emit('lobbyUpdate', {
         players: onlinePlayers,
