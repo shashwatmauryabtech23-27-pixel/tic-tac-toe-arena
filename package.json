@@ -1,0 +1,16 @@
+{
+  "name": "tictactoe-lan-tournament",
+  "version": "1.0.0",
+  "description": "Stealth LAN Tic-Tac-Toe Tournament Game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["game", "tic-tac-toe", "lan", "multiplayer"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1"
+  }
+}
