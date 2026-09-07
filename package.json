@@ -1,18 +1,27 @@
 {
   "name": "tictactoe-lan-tournament",
   "version": "1.0.0",
-  "description": "Stealth LAN Tic-Tac-Toe Tournament Game",
+  "description": "Real-time multiplayer Tic-Tac-Toe tournament game built with Node.js, Express, Socket.IO and MongoDB",
   "main": "server.js",
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "keywords": [
-    "game",
     "tic-tac-toe",
-    "lan",
-    "multiplayer"
+    "multiplayer",
+    "tournament",
+    "socket.io",
+    "nodejs",
+    "express",
+    "mongodb",
+    "render"
   ],
-  "author": "",
+  "author": "Shashwat Maurya",
   "license": "MIT",
   "dependencies": {
     "dotenv": "^17.4.2",
