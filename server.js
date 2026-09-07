@@ -260,7 +260,17 @@ io.on('connection', (socket) => {
             return;
         }
 
-        io.to(opponentId).emit('rematchRequest', socket.id);
+        socket.emit('rematchSent');
+        io.to(opponentId).emit('rematchRequest', {
+            requesterId: socket.id,
+            requesterName: players.get(socket.id).username
+        });
+    });
+
+    socket.on('declineRematch', (requesterId) => {
+        if (players.has(requesterId)) {
+            io.to(requesterId).emit('rematchDeclined');
+        }
     });
 
     socket.on('acceptRematch', (requesterId) => {
