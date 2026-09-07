@@ -416,6 +416,7 @@ function broadcastGameState(gameId) {
     }
 
     const gameState = {
+        finished: game.finished,
         board: game.board,
         currentTurn: game.currentTurn,
         player1Name: game.player1Name,
@@ -459,6 +460,7 @@ async function endGame(gameId, winnerId, result) {
     }
 
     game.finished = true;
+    broadcastGameState(gameId);
 
     const player1 = players.get(game.player1);
     const player2 = players.get(game.player2);
